@@ -1,0 +1,12 @@
+[package]
+name = "joy-clippy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+iced = { version = "0", features = ["debug", "tokio", "image", "advanced"] }
+tokio = { version = "1", features = ["full"] }
+rdev = "0"
+tray-icon = "0"
+clipboard-rs = "0"
+joy-macro = { git = "https://github.com/sub07/rust-utils", version = "0.2.4" }
