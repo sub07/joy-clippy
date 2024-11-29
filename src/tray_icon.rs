@@ -14,7 +14,7 @@ use tray_icon::{
 
 use crate::window::AppMessage;
 
-const TRAY_ICON: &[u8] = include_bytes!("../placeholder.ico");
+const TRAY_ICON: &[u8] = include_bytes!("../icon.ico");
 
 #[derive(Debug, DisplayFromDebug)]
 enum MenuEntry {
