@@ -1,5 +1,7 @@
 use iced::Color;
 
+pub const ASYNC_CHANNEL_SIZE: usize = 10;
+
 pub trait ColorUtils {
     fn darken(self, percentage: f32) -> Self;
     fn lighten(self, percentage: f32) -> Self;

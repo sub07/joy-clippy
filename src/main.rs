@@ -1,10 +1,10 @@
 use tray_icon::create_tray;
-use window::App;
+use app::App;
 
 mod clipboard;
 mod tray_icon;
 mod utils;
-mod window;
+mod app;
 
 fn main() {
     let _tray = create_tray();

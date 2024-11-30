@@ -2,8 +2,9 @@ use std::{fmt::Debug, thread, time::Duration};
 
 use clipboard_rs::{Clipboard, ClipboardContext};
 use iced::{
+    event::{self, Status},
     futures::{SinkExt, Stream},
-    keyboard::Modifiers,
+    keyboard::{key, Key, Modifiers},
     stream,
     widget::{self, button, column, container, scrollable, text},
     window::{self, Level, Position, Settings},
@@ -12,13 +13,16 @@ use iced::{
 use tokio::{sync::mpsc, time::sleep};
 
 use crate::{
-    clipboard::ClipboardListener, tray_icon::subscribe_tray_menu_event, utils::ColorUtils,
+    clipboard::ClipboardListener,
+    tray_icon::subscribe_tray_menu_event,
+    utils::{ColorUtils, ASYNC_CHANNEL_SIZE},
 };
 
 pub struct App {
     history: Vec<String>,
+    selected_history_item_index: i32,
     clipboard_context: ClipboardContext,
-    window: Option<window::Id>,
+    clippy_window: Option<window::Id>,
 }
 
 impl Debug for App {
@@ -29,14 +33,23 @@ impl Debug for App {
     }
 }
 
+pub enum ClippyWindowEvent {
+    Close,
+    Paste,
+    LooseFocus,
+    MoveHistoryCursor,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppMessage {
     ClipboardEvent,
     ToggleWindow,
-    GlobalMouseLeftClick((f64, f64)),
-    CleanWindow,
-    Quit,
+    OpenClippyWindow,
+    CloseClippyWindow,
+    ExitApp,
     Paste,
+    LooseFocus { id: window::Id },
+    MoveHistoryItem(i32),
 }
 
 impl App {
@@ -44,11 +57,16 @@ impl App {
         (
             Self {
                 history: Default::default(),
+                selected_history_item_index: 0,
                 clipboard_context: ClipboardContext::new().unwrap(),
-                window: None,
+                clippy_window: None,
             },
             Task::none(),
         )
+    }
+
+    pub fn selected_history_index(&self) -> usize {
+        self.history.len() - self.selected_history_item_index as usize - 1
     }
 
     pub fn update(&mut self, message: AppMessage) -> Task<AppMessage> {
@@ -60,51 +78,55 @@ impl App {
                 Task::none()
             }
             AppMessage::ToggleWindow => {
-                if let Some(window) = self.window.take() {
-                    window::close(window)
+                if self.clippy_window.is_some() {
+                    Task::done(AppMessage::CloseClippyWindow)
                 } else {
-                    let (id, open_task) = window::open(Settings {
-                        decorations: false,
-                        level: Level::AlwaysOnTop,
-                        position: Position::Centered,
-                        size: Size::new(200., 450.),
-                        exit_on_close_request: false,
-                        ..Default::default()
-                    });
-                    self.window = Some(id);
-                    open_task.discard()
+                    Task::done(AppMessage::OpenClippyWindow)
                 }
             }
-            AppMessage::GlobalMouseLeftClick((x, y)) => {
-                let (x, y) = (x as f32, y as f32);
-                if let Some(window) = self.window {
-                    window::get_position(window)
-                        .and_then(move |position| {
-                            window::get_size(window).map(move |size| (position, size))
-                        })
-                        .then(move |(position, size)| {
-                            if !(x > position.x
-                                && x < position.x + size.width
-                                && y > position.y
-                                && y < position.x + size.height)
-                            {
-                                window::close(window).chain(Task::done(AppMessage::CleanWindow))
-                            } else {
-                                // self.window = Some(window);
-                                Task::none()
-                            }
-                        })
+            AppMessage::ExitApp => iced::exit(),
+            AppMessage::Paste => Task::done(AppMessage::ToggleWindow)
+                .chain(Task::perform(Self::paste(), |_| {}).discard()),
+            AppMessage::OpenClippyWindow => {
+                let (id, open_task) = window::open(Settings {
+                    decorations: false,
+                    level: Level::AlwaysOnTop,
+                    position: Position::Centered,
+                    size: Size::new(200., 450.),
+                    exit_on_close_request: false,
+                    ..Default::default()
+                });
+                self.clippy_window = Some(id);
+                self.selected_history_item_index = 0;
+                open_task.chain(window::gain_focus(id)).discard()
+            }
+            AppMessage::CloseClippyWindow => {
+                if let Some(window) = self.clippy_window.take() {
+                    window::close(window)
                 } else {
                     Task::none()
                 }
             }
-            AppMessage::CleanWindow => {
-                self.window = None;
+            AppMessage::LooseFocus { id } => {
+                if self
+                    .clippy_window
+                    .is_some_and(|clippy_window_id| clippy_window_id == id)
+                {
+                    Task::done(AppMessage::CloseClippyWindow)
+                } else {
+                    Task::none()
+                }
+            }
+            AppMessage::MoveHistoryItem(direction) => {
+                self.selected_history_item_index += direction;
+                if self.selected_history_item_index < 0 {
+                    self.selected_history_item_index = 0
+                }
+                if self.selected_history_item_index >= self.history.len() as i32 {
+                    self.selected_history_item_index = self.history.len() as i32 - 1;
+                }
                 Task::none()
             }
-            AppMessage::Quit => iced::exit(),
-            AppMessage::Paste => Task::done(AppMessage::ToggleWindow)
-                .chain(Task::perform(Self::paste(), |_| {}).discard()),
         }
     }
 
@@ -127,17 +149,47 @@ impl App {
         let clipboard_subscription = Subscription::run(ClipboardListener::subscribe);
         let global_event_subscription = Subscription::run(Self::subscribe_global_event);
         let tray_menu_event_subscription = Subscription::run(subscribe_tray_menu_event);
+        let loose_focus_event_handler = event::listen_with(|event, status, id| {
+            if let Status::Captured = status {
+                return None;
+            }
+
+            match event {
+                iced::Event::Window(window::Event::Unfocused) => {
+                    Some(AppMessage::LooseFocus { id })
+                }
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key,
+                    modified_key: _,
+                    physical_key: _,
+                    location: _,
+                    modifiers,
+                    text: _,
+                }) => match key {
+                    Key::Named(key::Named::F9) if modifiers.alt() => {
+                        Some(AppMessage::CloseClippyWindow)
+                    }
+                    Key::Named(key::Named::ArrowDown) => Some(AppMessage::MoveHistoryItem(1)),
+                    Key::Named(key::Named::ArrowUp) => Some(AppMessage::MoveHistoryItem(-1)),
+                    Key::Named(key::Named::Escape) => Some(AppMessage::CloseClippyWindow),
+                    Key::Named(key::Named::Enter) => Some(AppMessage::Paste),
+                    _ => None,
+                },
+                _ => None,
+            }
+        });
 
         Subscription::batch([
             clipboard_subscription,
             global_event_subscription,
             tray_menu_event_subscription,
+            loose_focus_event_handler,
         ])
     }
 
     fn subscribe_global_event() -> impl Stream<Item = AppMessage> {
-        stream::channel(100, |mut sender| async move {
-            let (tx, mut rx) = mpsc::channel(100);
+        stream::channel(ASYNC_CHANNEL_SIZE, |mut sender| async move {
+            let (tx, mut rx) = mpsc::channel(ASYNC_CHANNEL_SIZE);
             thread::spawn(move || {
                 rdev::listen(move |event| {
                     tx.blocking_send(event).unwrap();
@@ -145,8 +197,6 @@ impl App {
             });
 
             let mut modifiers = Modifiers::empty();
-            let mut mouse_position = (0., 0.);
-
             loop {
                 let event = rx.recv().await.unwrap();
                 match event.event_type {
@@ -166,7 +216,7 @@ impl App {
                         }
                         rdev::Key::F9 => {
                             if modifiers.alt() {
-                                sender.send(AppMessage::ToggleWindow).await.unwrap();
+                                sender.send(AppMessage::OpenClippyWindow).await.unwrap();
                             }
                         }
                         _ => {}
@@ -186,26 +236,35 @@ impl App {
                         }
                         _ => {}
                     },
-                    rdev::EventType::ButtonPress(_) => {
-                        sender
-                            .send(AppMessage::GlobalMouseLeftClick(mouse_position))
-                            .await
-                            .unwrap();
-                    }
-                    rdev::EventType::ButtonRelease(_) => {}
-                    rdev::EventType::MouseMove { x, y } => {
-                        mouse_position = (x, y);
-                    }
-                    rdev::EventType::Wheel {
-                        delta_x: _,
-                        delta_y: _,
-                    } => {}
+                    _ => {}
                 }
             }
         })
     }
 
     pub fn view(&self, _: window::Id) -> Element<AppMessage> {
+        fn row_bg_color(theme: &iced::Theme, row_index: usize, selected: bool) -> container::Style {
+            let bg_color = if row_index & 1 == 0 {
+                theme.palette().background
+            } else if theme.extended_palette().is_dark {
+                theme.palette().background.lighten(0.1)
+            } else {
+                theme.palette().background.darken(0.1)
+            };
+
+            let bg_color = if selected {
+                if theme.extended_palette().is_dark {
+                    bg_color.lighten(0.4)
+                } else {
+                    bg_color.darken(0.4)
+                }
+            } else {
+                bg_color
+            };
+
+            widget::container::background(bg_color)
+        }
+
         column![
             button(text!("Paste")).on_press(AppMessage::Paste),
             scrollable(
@@ -213,13 +272,11 @@ impl App {
                     |(index, entry)| {
                         container(text!("{entry}").size(13))
                             .style(move |theme: &iced::Theme| {
-                                widget::container::background(if index & 1 == 0 {
-                                    Color::TRANSPARENT
-                                } else if theme.extended_palette().is_dark {
-                                    theme.palette().background.lighten(0.2)
-                                } else {
-                                    theme.palette().background.darken(0.2)
-                                })
+                                row_bg_color(
+                                    theme,
+                                    index,
+                                    index == self.selected_history_item_index as usize,
+                                )
                             })
                             .padding(8)
                             .width(Length::Fill)

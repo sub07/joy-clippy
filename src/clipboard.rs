@@ -7,18 +7,18 @@ use iced::{
 };
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-use crate::window::AppMessage;
+use crate::{app::AppMessage, utils::ASYNC_CHANNEL_SIZE};
 
 pub struct ClipboardListener(Sender<()>);
 
 impl ClipboardListener {
     pub fn new() -> (ClipboardListener, Receiver<()>) {
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::channel(ASYNC_CHANNEL_SIZE);
         (ClipboardListener(tx), rx)
     }
 
     pub fn subscribe() -> impl Stream<Item = AppMessage> {
-        stream::channel(100, |mut output| async move {
+        stream::channel(ASYNC_CHANNEL_SIZE, |mut output| async move {
             let (listener, mut rx) = ClipboardListener::new();
             thread::spawn(|| {
                 let mut clipboard_watcher: ClipboardWatcherContext<ClipboardListener> =

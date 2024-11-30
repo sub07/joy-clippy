@@ -12,7 +12,7 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
 };
 
-use crate::window::AppMessage;
+use crate::{app::AppMessage, utils::ASYNC_CHANNEL_SIZE};
 
 const TRAY_ICON: &[u8] = include_bytes!("../icon.ico");
 
@@ -55,8 +55,8 @@ pub fn create_tray() -> TrayIcon {
 }
 
 pub fn subscribe_tray_menu_event() -> impl Stream<Item = AppMessage> {
-    stream::channel(100, |mut output| async move {
-        let (tx, mut rx) = mpsc::channel(100);
+    stream::channel(ASYNC_CHANNEL_SIZE, |mut output| async move {
+        let (tx, mut rx) = mpsc::channel(ASYNC_CHANNEL_SIZE);
 
         thread::spawn(move || loop {
             if let Ok(menu_event) = MenuEvent::receiver().recv() {
@@ -72,7 +72,7 @@ pub fn subscribe_tray_menu_event() -> impl Stream<Item = AppMessage> {
             {
                 let message = match menu_entry {
                     MenuEntry::Open => AppMessage::ToggleWindow,
-                    MenuEntry::Quit => AppMessage::Quit,
+                    MenuEntry::Quit => AppMessage::ExitApp,
                 };
                 output.send(message).await.unwrap();
             }
