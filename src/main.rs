@@ -5,6 +5,7 @@ mod clipboard;
 mod tray_icon;
 mod utils;
 mod app;
+mod window;
 
 fn main() {
     let _tray = create_tray();

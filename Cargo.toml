@@ -10,3 +10,4 @@ rdev = "0"
 tray-icon = "0"
 clipboard-rs = "0"
 joy-macro = { git = "https://github.com/sub07/rust-utils", version = "0.2.4" }
+joy-impl-ignore = { git = "https://github.com/sub07/rust-utils", version = "0.1.1" }
