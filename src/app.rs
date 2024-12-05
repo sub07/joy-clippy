@@ -2,6 +2,7 @@ use std::{collections::HashMap, fmt::Debug, thread, time::Duration};
 
 use clipboard_rs::{Clipboard, ClipboardContext};
 use iced::{
+    advanced::graphics::image::image_rs::load_from_memory,
     event::{self, Status},
     futures::{SinkExt, Stream},
     keyboard::{key, Key, Modifiers},
@@ -18,6 +19,7 @@ use crate::{
     tray::subscribe_tray_menu_event,
     utils::ASYNC_CHANNEL_SIZE,
     window::{self, Window},
+    JOY_CLIPPY_ICON,
 };
 
 pub struct App {
@@ -62,6 +64,13 @@ impl App {
         )
     }
 
+    fn get_icon() -> iced::window::Icon {
+        let icon_data = load_from_memory(JOY_CLIPPY_ICON).expect("Icon loading");
+        let (width, height) = (icon_data.width(), icon_data.height());
+        iced::window::icon::from_rgba(icon_data.into_bytes(), width, height)
+            .expect("Icon from rgba")
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         println!("{:?}", message);
         match message {
@@ -72,6 +81,7 @@ impl App {
                     position: Position::Centered,
                     size: Size::new(200., 450.),
                     exit_on_close_request: false,
+                    icon: Some(Self::get_icon()),
                     ..Default::default()
                 });
                 self.windows.insert(
@@ -84,21 +94,14 @@ impl App {
                 let (id, open_task) = iced::window::open(Settings {
                     size: Size::new(500., 300.),
                     resizable: true,
+                    icon: Some(Self::get_icon()),
                     ..Default::default()
                 });
-                let close_task = Task::batch(
-                    self.windows
-                        .keys()
-                        .map(|id| Task::done(Message::RequestWindowClose(*id))),
-                );
 
                 self.windows
                     .insert(id, Window::Settings(window::settings::State::new()));
 
-                close_task
-                    .chain(open_task.discard())
-                    .chain(iced::window::gain_focus(id))
-                    .discard()
+                open_task.chain(iced::window::gain_focus(id)).discard()
             }
             Message::RequestWindowClose(id) => iced::window::close(id),
             Message::WindowClose(id) => {

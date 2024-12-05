@@ -7,6 +7,8 @@ mod tray;
 mod utils;
 mod window;
 
+const JOY_CLIPPY_ICON: &[u8] = include_bytes!("../icon.ico");
+
 fn main() {
     let _tray = create_tray();
 

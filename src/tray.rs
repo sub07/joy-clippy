@@ -12,9 +12,7 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
 };
 
-use crate::{app::Message, utils::ASYNC_CHANNEL_SIZE};
-
-const TRAY_ICON: &[u8] = include_bytes!("../icon.ico");
+use crate::{app::Message, utils::ASYNC_CHANNEL_SIZE, JOY_CLIPPY_ICON};
 
 #[derive(Debug, DisplayFromDebug)]
 enum MenuEntry {
@@ -37,7 +35,7 @@ impl FromStr for MenuEntry {
 }
 
 pub fn create_tray() -> TrayIcon {
-    let icon_data = load_from_memory(TRAY_ICON).unwrap();
+    let icon_data = load_from_memory(JOY_CLIPPY_ICON).unwrap();
     let (width, height) = (icon_data.width(), icon_data.height());
     let icon = Icon::from_rgba(icon_data.into_bytes(), width, height).unwrap();
 
