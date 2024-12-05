@@ -1,9 +1,9 @@
-pub mod config;
-pub mod main;
+pub mod settings;
+pub mod history;
 
 #[derive(Debug)]
 pub enum Window {
-    Main(main::State),
-    Config(config::State),
+    History(history::State),
+    Settings(settings::State),
 }
 

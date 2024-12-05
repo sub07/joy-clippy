@@ -15,6 +15,7 @@ pub struct State {
 pub enum Message {
     MoveHistoryCursor(i32),
     Paste,
+    OpenSettings,
 }
 
 impl State {
@@ -37,9 +38,10 @@ impl State {
                 }
                 Task::none()
             }
-            Message::Paste => Task::done(app::Message::Paste(
+            Message::Paste => Task::done(app::Message::RequestPaste(
                 self.clipboard_history.len() - self.selected_item_cursor as usize - 1,
             )),
+            Message::OpenSettings => Task::done(app::Message::OpenSettingsWindow),
         }
     }
 
@@ -68,6 +70,7 @@ impl State {
 
         column![
             button(text!("Paste")).on_press(Message::Paste),
+            button(text!("Settings")).on_press(Message::OpenSettings),
             scrollable(
                 widget::Column::from_iter(self.clipboard_history.iter().rev().enumerate().map(
                     |(index, entry)| {

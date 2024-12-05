@@ -19,6 +19,7 @@ const TRAY_ICON: &[u8] = include_bytes!("../icon.ico");
 #[derive(Debug, DisplayFromDebug)]
 enum MenuEntry {
     Open,
+    Settings,
     Quit,
 }
 
@@ -28,6 +29,7 @@ impl FromStr for MenuEntry {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Open" => Ok(MenuEntry::Open),
+            "Settings" => Ok(MenuEntry::Settings),
             "Quit" => Ok(MenuEntry::Quit),
             _ => Err(()),
         }
@@ -44,6 +46,7 @@ pub fn create_tray() -> TrayIcon {
         .with_menu(Box::new(
             Menu::with_items(&[
                 &MenuItem::with_id(MenuEntry::Open.to_string(), "Open", true, None),
+                &MenuItem::with_id(MenuEntry::Settings.to_string(), "Settings", true, None),
                 &PredefinedMenuItem::separator(),
                 &MenuItem::with_id(MenuEntry::Quit.to_string(), "Quit", true, None),
             ])
@@ -71,8 +74,9 @@ pub fn subscribe_tray_menu_event() -> impl Stream<Item = Message> {
                 .and_then(|MenuEvent { id: MenuId(id) }| MenuEntry::from_str(id.as_str()).ok())
             {
                 let message = match menu_entry {
-                    MenuEntry::Open => Message::ToggleWindow,
+                    MenuEntry::Open => Message::OpenHistoryWindow,
                     MenuEntry::Quit => Message::ExitApp,
+                    MenuEntry::Settings => Message::OpenSettingsWindow,
                 };
                 output.send(message).await.unwrap();
             }

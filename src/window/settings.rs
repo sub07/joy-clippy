@@ -9,9 +9,14 @@ pub struct State;
 pub enum Message {}
 
 impl State {
-    pub fn update(&mut self, _ç: Message) -> Task<app::Message> {
+    pub fn new() -> State {
+        State
+    }
+
+    pub fn update(&mut self, _: Message) -> Task<app::Message> {
         Task::none()
     }
+
     pub fn view(&self) -> Element<Message> {
         text!("todo").into()
     }
