@@ -27,13 +27,13 @@ pub async fn get_db() -> anyhow::Result<DatabaseConnection> {
 }
 
 pub mod repo {
-    use chrono::Utc;
+    use chrono::Local;
     use sea_orm::{DatabaseConnection, EntityTrait, QueryOrder, Set};
 
     pub async fn add_item(db: &DatabaseConnection, data: String) -> anyhow::Result<()> {
         entity::entry::Entity::insert(entity::entry::ActiveModel {
             data: Set(data),
-            added_at: Set(Utc::now().naive_utc()),
+            added_at: Set(Local::now().naive_local()),
             ..Default::default()
         })
         .exec_without_returning(db)
