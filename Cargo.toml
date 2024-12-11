@@ -3,7 +3,23 @@ name = "joy-clippy"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = [".", "entity", "migration"]
+
+[workspace.dependencies]
+sea-orm = { version = "1.1.0", features = [
+    "sqlx-sqlite",
+    "runtime-tokio-rustls",
+    "macros",
+    "debug-print",
+] }
+
 [dependencies]
+sea-orm.workspace = true
+
+migration.path = "migration"
+entity.path = "entity"
+
 iced = { version = "0", features = ["debug", "tokio", "image", "advanced"] }
 tokio = { version = "1", features = ["full"] }
 rdev = "0"
@@ -11,3 +27,8 @@ tray-icon = "0"
 clipboard-rs = "0"
 joy-macro = { git = "https://github.com/sub07/rust-utils", version = "0.2.4" }
 joy-impl-ignore = { git = "https://github.com/sub07/rust-utils", version = "0.1.1" }
+anyhow = "1"
+chrono = "0"
+tracing-subscriber = "0"
+tracing = "0"
+directories = "5"

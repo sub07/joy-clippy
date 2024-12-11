@@ -12,10 +12,12 @@ use iced::{
     Element, Size, Subscription, Task,
 };
 use joy_impl_ignore::debug::DebugImplIgnore;
+use sea_orm::DatabaseConnection;
 use tokio::{sync::mpsc, time::sleep};
 
 use crate::{
     clipboard::ClipboardListener,
+    db::{get_db, repo},
     tray::subscribe_tray_menu_event,
     utils::ASYNC_CHANNEL_SIZE,
     window::{self, Window},
@@ -23,44 +25,54 @@ use crate::{
 };
 
 pub struct App {
-    history: Vec<String>,
     clipboard_context: DebugImplIgnore<ClipboardContext>,
     windows: HashMap<iced::window::Id, Window>,
+    db: DatabaseConnection,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     // Window general
-    OpenHistoryWindow,
-    OpenSettingsWindow,
-    RequestHistoryWindowClose,
     RequestWindowClose(iced::window::Id),
     WindowClose(iced::window::Id),
     LooseFocus(iced::window::Id),
+    Panic(String),
     ExitApp,
 
     // Clipboard
     ClipboardEvent,
-    RequestPaste(usize),
-    SetClipboardItem(usize),
+    RequestPaste(entity::entry::Model),
+    SetClipboardItem(entity::entry::Model),
     SimulatePaste,
 
-    // Window specific
-    HistoryWindow(iced::window::Id, window::history::Message),
-    ConfigWindow(iced::window::Id, window::settings::Message),
+    // History window
+    RequestOpenHistoryWindow,
+    HistoryWindowLoaded(iced::window::Id, Vec<entity::entry::Model>),
+    HistoryWindowEvent(iced::window::Id, window::history::Message),
+    RequestHistoryWindowClose,
+
+    // Settings window
+    OpenSettingsWindow,
+    SettingsWindowEvent(iced::window::Id, window::settings::Message),
+
+    // Async events
+    DbConnection(DatabaseConnection),
 }
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
         (
             Self {
-                history: Default::default(),
                 clipboard_context: ClipboardContext::new()
                     .expect("Retrieval of system clipboard")
                     .into(),
                 windows: Default::default(),
+                db: DatabaseConnection::Disconnected,
             },
-            Task::none(),
+            Task::perform(get_db(), |res| match res {
+                Ok(db) => Message::DbConnection(db),
+                Err(e) => Message::Panic(format!("{e:?}")),
+            }),
         )
     }
 
@@ -74,21 +86,20 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         println!("{:?}", message);
         match message {
-            Message::OpenHistoryWindow => {
-                let (id, open_task) = iced::window::open(Settings {
-                    decorations: false,
-                    level: Level::AlwaysOnTop,
-                    position: Position::Centered,
-                    size: Size::new(200., 450.),
-                    exit_on_close_request: false,
-                    icon: Some(Self::get_icon()),
-                    ..Default::default()
-                });
-                self.windows.insert(
-                    id,
-                    Window::History(window::history::State::new(self.history.clone())),
-                );
-                open_task.chain(iced::window::gain_focus(id)).discard()
+            Message::HistoryWindowLoaded(id, items) => {
+                if matches!(
+                    self.windows.get(&id),
+                    Some(Window::History(window::history::State::Loading))
+                ) {
+                    if let Some(Window::History(state)) = self.windows.get_mut(&id) {
+                        *state = window::history::State::Loaded {
+                            selected_item_cursor: 0,
+                            items,
+                        }
+                    }
+                }
+
+                Task::none()
             }
             Message::OpenSettingsWindow => {
                 let (id, open_task) = iced::window::open(Settings {
@@ -117,53 +128,46 @@ impl App {
             }
             Message::ExitApp => iced::exit(),
             Message::ClipboardEvent => {
+                let db = self.db.clone();
                 if let Ok(text) = self.clipboard_context.get_text() {
-                    self.history.push(text);
-                }
-                Task::none()
-            }
-            Message::RequestPaste(item_index) => {
-                let close_task = if let Some(id) = self.get_history_window_id() {
-                    Task::done(Message::RequestWindowClose(id))
+                    Task::future(async move { crate::db::repo::add_item(&db, text).await })
+                        .discard()
                 } else {
                     Task::none()
-                };
-
-                close_task
-                    .chain(Task::done(Message::SetClipboardItem(item_index)))
-                    .chain(Task::done(Message::SimulatePaste))
+                }
             }
-            Message::SetClipboardItem(index) => {
+            Message::RequestPaste(item) => Task::done(Message::RequestHistoryWindowClose)
+                .chain(Task::done(Message::SetClipboardItem(item)))
+                .chain(Task::done(Message::SimulatePaste)),
+            Message::SetClipboardItem(item) => {
                 self.clipboard_context
-                    .set_text(self.history.remove(index))
+                    .set_text(item.data.clone())
                     .expect("Setting system clipboard value");
-                Task::none()
+                let db = self.db.clone();
+                Task::future(async move { repo::delete(&db, &item).await }).discard()
             }
-            Message::SimulatePaste => Task::perform(
-                async {
-                    async fn simulate(event: rdev::EventType) {
-                        sleep(Duration::from_millis(20)).await;
-                        rdev::simulate(&event).unwrap();
-                        sleep(Duration::from_millis(20)).await;
-                        sleep(Duration::from_millis(20)).await;
-                    }
+            Message::SimulatePaste => Task::future(async {
+                async fn simulate(event: rdev::EventType) {
+                    sleep(Duration::from_millis(20)).await;
+                    rdev::simulate(&event).unwrap();
+                    sleep(Duration::from_millis(20)).await;
+                    sleep(Duration::from_millis(20)).await;
+                }
 
-                    simulate(rdev::EventType::KeyPress(rdev::Key::ControlLeft)).await;
-                    simulate(rdev::EventType::KeyPress(rdev::Key::KeyV)).await;
-                    simulate(rdev::EventType::KeyRelease(rdev::Key::KeyV)).await;
-                    simulate(rdev::EventType::KeyRelease(rdev::Key::ControlLeft)).await;
-                },
-                |_| {},
-            )
+                simulate(rdev::EventType::KeyPress(rdev::Key::ControlLeft)).await;
+                simulate(rdev::EventType::KeyPress(rdev::Key::KeyV)).await;
+                simulate(rdev::EventType::KeyRelease(rdev::Key::KeyV)).await;
+                simulate(rdev::EventType::KeyRelease(rdev::Key::ControlLeft)).await;
+            })
             .discard(),
-            Message::HistoryWindow(window_id, message) => {
+            Message::HistoryWindowEvent(window_id, message) => {
                 if let Some(Window::History(state)) = self.windows.get_mut(&window_id) {
                     state.update(message)
                 } else {
                     Task::none()
                 }
             }
-            Message::ConfigWindow(window_id, message) => {
+            Message::SettingsWindowEvent(window_id, message) => {
                 if let Some(Window::Settings(state)) = self.windows.get_mut(&window_id) {
                     state.update(message)
                 } else {
@@ -176,6 +180,41 @@ impl App {
                 } else {
                     Task::none()
                 }
+            }
+            Message::DbConnection(db) => {
+                self.db = db;
+                Task::none()
+            }
+            Message::RequestOpenHistoryWindow => {
+                let (id, open_task) = iced::window::open(Settings {
+                    decorations: false,
+                    level: Level::AlwaysOnTop,
+                    position: Position::Centered,
+                    size: Size::new(200., 450.),
+                    exit_on_close_request: false,
+                    icon: Some(Self::get_icon()),
+                    ..Default::default()
+                });
+                self.windows
+                    .insert(id, Window::History(window::history::State::Loading));
+
+                let db = self.db.clone();
+                open_task
+                    .chain(iced::window::gain_focus(id))
+                    .discard()
+                    .chain(Task::perform(
+                        async move { crate::db::repo::get_items(&db).await },
+                        move |items| {
+                            Message::HistoryWindowLoaded(
+                                id,
+                                items.expect("Retreiving history item"),
+                            )
+                        },
+                    ))
+            }
+            Message::Panic(message) => {
+                tracing::error!("A fatal error occured\n{message}");
+                Task::done(Message::ExitApp)
             }
         }
     }
@@ -204,18 +243,19 @@ impl App {
                     Key::Named(key::Named::F9) if modifiers.alt() => {
                         Some(Message::RequestHistoryWindowClose)
                     }
-                    Key::Named(key::Named::ArrowDown) => Some(Message::HistoryWindow(
+                    Key::Named(key::Named::ArrowDown) => Some(Message::HistoryWindowEvent(
                         id,
                         window::history::Message::MoveHistoryCursor(1),
                     )),
-                    Key::Named(key::Named::ArrowUp) => Some(Message::HistoryWindow(
+                    Key::Named(key::Named::ArrowUp) => Some(Message::HistoryWindowEvent(
                         id,
                         window::history::Message::MoveHistoryCursor(-1),
                     )),
                     Key::Named(key::Named::Escape) => Some(Message::RequestHistoryWindowClose),
-                    Key::Named(key::Named::Enter) => {
-                        Some(Message::HistoryWindow(id, window::history::Message::Paste))
-                    }
+                    Key::Named(key::Named::Enter) => Some(Message::HistoryWindowEvent(
+                        id,
+                        window::history::Message::Paste,
+                    )),
                     _ => None,
                 },
                 _ => None,
@@ -263,13 +303,15 @@ impl App {
                         rdev::Key::ShiftLeft | rdev::Key::ShiftRight => {
                             modifiers.insert(Modifiers::SHIFT);
                         }
-
                         rdev::Key::MetaLeft | rdev::Key::MetaRight => {
                             modifiers.insert(Modifiers::LOGO);
                         }
                         rdev::Key::F9 => {
                             if modifiers.alt() {
-                                sender.send(Message::OpenHistoryWindow).await.unwrap();
+                                sender
+                                    .send(Message::RequestOpenHistoryWindow)
+                                    .await
+                                    .unwrap();
                             }
                         }
                         _ => {}
@@ -299,10 +341,10 @@ impl App {
         match self.windows.get(&id) {
             Some(Window::History(state)) => state
                 .view()
-                .map(move |message| Message::HistoryWindow(id, message)),
+                .map(move |message| Message::HistoryWindowEvent(id, message)),
             Some(Window::Settings(state)) => state
                 .view()
-                .map(move |message| Message::ConfigWindow(id, message)),
+                .map(move |message| Message::SettingsWindowEvent(id, message)),
             None => horizontal_space().into(),
         }
     }

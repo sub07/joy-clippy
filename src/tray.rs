@@ -72,7 +72,7 @@ pub fn subscribe_tray_menu_event() -> impl Stream<Item = Message> {
                 .and_then(|MenuEvent { id: MenuId(id) }| MenuEntry::from_str(id.as_str()).ok())
             {
                 let message = match menu_entry {
-                    MenuEntry::Open => Message::OpenHistoryWindow,
+                    MenuEntry::Open => Message::RequestOpenHistoryWindow,
                     MenuEntry::Quit => Message::ExitApp,
                     MenuEntry::Settings => Message::OpenSettingsWindow,
                 };
