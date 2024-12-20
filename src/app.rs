@@ -5,7 +5,10 @@ use iced::{
     advanced::graphics::image::image_rs::load_from_memory,
     event::{self, Status},
     futures::{SinkExt, Stream},
-    keyboard::{key, Key, Modifiers},
+    keyboard::{
+        key::{self, Code, Physical},
+        Key, Modifiers,
+    },
     stream,
     widget::horizontal_space,
     window::{close_events, Level, Position, Settings},
@@ -19,19 +22,35 @@ use crate::{
     clipboard::ClipboardListener,
     db::{get_db, repo},
     tray::subscribe_tray_menu_event,
-    utils::ASYNC_CHANNEL_SIZE,
+    utils::{self, iced_event_to_shortcut, ASYNC_CHANNEL_SIZE},
     window::{self, Window},
     JOY_CLIPPY_ICON,
 };
+
+const DEFAULT_TOGGLE_MODIFIERS: iced::keyboard::Modifiers = Modifiers::ALT;
+const DEFAULT_TOGGLE_PHYSICAL_KEY: iced::keyboard::key::Physical = Physical::Code(Code::F9);
+const DEFAULT_TOGGLE_LOGICAL_KEY: iced::keyboard::Key = Key::Named(key::Named::F9);
+
+#[derive(Debug, Clone)]
+pub struct Shortcut {
+    pub modifiers: Modifiers,
+    pub logical_key: iced::keyboard::Key,
+    pub iced_physical_key: iced::keyboard::key::Physical,
+    pub rdev_key: rdev::Key,
+}
 
 pub struct App {
     clipboard_context: DebugImplIgnore<ClipboardContext>,
     windows: HashMap<iced::window::Id, Window>,
     db: DatabaseConnection,
+    toggle_shortcut: Shortcut,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    GlobalEvent(Modifiers, rdev::Event),
+    AppEvent(iced::window::Id, iced::Event),
+
     // Window general
     RequestWindowClose(iced::window::Id),
     WindowClose(iced::window::Id),
@@ -47,9 +66,9 @@ pub enum Message {
 
     // History window
     RequestOpenHistoryWindow,
+    RequestCloseHistoryWindow,
     HistoryWindowLoaded(iced::window::Id, Vec<entity::entry::Model>),
     HistoryWindowEvent(iced::window::Id, window::history::Message),
-    RequestHistoryWindowClose,
 
     // Settings window
     OpenSettingsWindow,
@@ -57,6 +76,9 @@ pub enum Message {
 
     // Async events
     DbConnection(DatabaseConnection),
+
+    // Business
+    UpdateToggleShortcut(Shortcut),
 }
 
 impl App {
@@ -68,11 +90,19 @@ impl App {
                     .into(),
                 windows: Default::default(),
                 db: DatabaseConnection::Disconnected,
+                toggle_shortcut: Shortcut {
+                    modifiers: DEFAULT_TOGGLE_MODIFIERS,
+                    logical_key: DEFAULT_TOGGLE_LOGICAL_KEY,
+                    iced_physical_key: DEFAULT_TOGGLE_PHYSICAL_KEY,
+                    rdev_key: utils::iced_key_to_rdev(DEFAULT_TOGGLE_PHYSICAL_KEY),
+                },
             },
             Task::perform(get_db(), |res| match res {
                 Ok(db) => Message::DbConnection(db),
                 Err(e) => Message::Panic(format!("{e:?}")),
-            }),
+            })
+            .chain(Task::done(Message::RequestOpenHistoryWindow))
+            .chain(Task::done(Message::RequestCloseHistoryWindow)),
         )
     }
 
@@ -84,7 +114,6 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
-        println!("{:?}", message);
         match message {
             Message::HistoryWindowLoaded(id, items) => {
                 if matches!(
@@ -109,8 +138,10 @@ impl App {
                     ..Default::default()
                 });
 
-                self.windows
-                    .insert(id, Window::Settings(window::settings::State::new()));
+                self.windows.insert(
+                    id,
+                    Window::Settings(window::settings::State::new(self.toggle_shortcut.clone())),
+                );
 
                 open_task.chain(iced::window::gain_focus(id)).discard()
             }
@@ -136,7 +167,7 @@ impl App {
                     Task::none()
                 }
             }
-            Message::RequestPaste(item) => Task::done(Message::RequestHistoryWindowClose)
+            Message::RequestPaste(item) => Task::done(Message::RequestCloseHistoryWindow)
                 .chain(Task::done(Message::SetClipboardItem(item)))
                 .chain(Task::done(Message::SimulatePaste)),
             Message::SetClipboardItem(item) => {
@@ -174,7 +205,7 @@ impl App {
                     Task::none()
                 }
             }
-            Message::RequestHistoryWindowClose => {
+            Message::RequestCloseHistoryWindow => {
                 if let Some(id) = self.get_history_window_id() {
                     Task::done(Message::RequestWindowClose(id))
                 } else {
@@ -216,6 +247,94 @@ impl App {
                 tracing::error!("A fatal error occured\n{message}");
                 Task::done(Message::ExitApp)
             }
+            Message::GlobalEvent(modifiers, event) => {
+                let Shortcut {
+                    modifiers: toggle_modifiers,
+                    rdev_key,
+                    ..
+                } = &self.toggle_shortcut;
+                if matches!(event.event_type, rdev::EventType::KeyPress(key) if &key == rdev_key && toggle_modifiers == &modifiers)
+                {
+                    Task::done(Message::RequestOpenHistoryWindow)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::AppEvent(id, event) => match self.windows.get(&id) {
+                Some(window) => match window {
+                    Window::History(_) => {
+                        let Shortcut {
+                            modifiers: toggle_modifiers,
+                            iced_physical_key,
+                            ..
+                        } = &self.toggle_shortcut;
+                        if matches!(&event, iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                            key: _,
+                            modified_key: _,
+                            physical_key,
+                            location: _,
+                            modifiers,
+                            text: _,
+                        }) if (physical_key == iced_physical_key && modifiers == toggle_modifiers))
+                        {
+                            Task::done(Message::RequestCloseHistoryWindow)
+                        } else {
+                            match event {
+                                iced::Event::Window(iced::window::Event::Unfocused) => {
+                                    Task::done(Message::LooseFocus(id))
+                                }
+                                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                                    key: _,
+                                    modified_key: _,
+                                    physical_key,
+                                    location: _,
+                                    modifiers: _,
+                                    text: _,
+                                }) => match physical_key {
+                                    key::Physical::Code(Code::ArrowDown) => {
+                                        Task::done(Message::HistoryWindowEvent(
+                                            id,
+                                            window::history::Message::MoveHistoryCursor(1),
+                                        ))
+                                    }
+                                    key::Physical::Code(Code::ArrowUp) => {
+                                        Task::done(Message::HistoryWindowEvent(
+                                            id,
+                                            window::history::Message::MoveHistoryCursor(-1),
+                                        ))
+                                    }
+                                    key::Physical::Code(Code::Escape) => {
+                                        Task::done(Message::RequestCloseHistoryWindow)
+                                    }
+                                    key::Physical::Code(Code::Enter) => {
+                                        Task::done(Message::HistoryWindowEvent(
+                                            id,
+                                            window::history::Message::Paste,
+                                        ))
+                                    }
+                                    _ => Task::none(),
+                                },
+                                _ => Task::none(),
+                            }
+                        }
+                    }
+                    Window::Settings(_) => {
+                        if let Some(shortcut) = iced_event_to_shortcut(event) {
+                            Task::done(Message::SettingsWindowEvent(
+                                id,
+                                window::settings::Message::NewShortcutInput(shortcut),
+                            ))
+                        } else {
+                            Task::none()
+                        }
+                    }
+                },
+                None => Task::none(),
+            },
+            Message::UpdateToggleShortcut(shortcut) => {
+                self.toggle_shortcut = shortcut;
+                Task::none()
+            }
         }
     }
 
@@ -223,43 +342,12 @@ impl App {
         let clipboard_event_subscription = Subscription::run(ClipboardListener::subscribe);
         let global_event_subscription = Subscription::run(Self::subscribe_global_event);
         let tray_menu_event_subscription = Subscription::run(subscribe_tray_menu_event);
-        let loose_focus_event_subscription = event::listen_with(|event, status, id| {
+        let iced_event_subscription = event::listen_with(|event, status, id| {
             if let Status::Captured = status {
                 return None;
             }
 
-            match event {
-                iced::Event::Window(iced::window::Event::Unfocused) => {
-                    Some(Message::LooseFocus(id))
-                }
-                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                    key,
-                    modified_key: _,
-                    physical_key: _,
-                    location: _,
-                    modifiers,
-                    text: _,
-                }) => match key {
-                    Key::Named(key::Named::F9) if modifiers.alt() => {
-                        Some(Message::RequestHistoryWindowClose)
-                    }
-                    Key::Named(key::Named::ArrowDown) => Some(Message::HistoryWindowEvent(
-                        id,
-                        window::history::Message::MoveHistoryCursor(1),
-                    )),
-                    Key::Named(key::Named::ArrowUp) => Some(Message::HistoryWindowEvent(
-                        id,
-                        window::history::Message::MoveHistoryCursor(-1),
-                    )),
-                    Key::Named(key::Named::Escape) => Some(Message::RequestHistoryWindowClose),
-                    Key::Named(key::Named::Enter) => Some(Message::HistoryWindowEvent(
-                        id,
-                        window::history::Message::Paste,
-                    )),
-                    _ => None,
-                },
-                _ => None,
-            }
+            Some(Message::AppEvent(id, event))
         });
 
         let window_close_event_subscription = close_events().map(Message::WindowClose);
@@ -268,7 +356,7 @@ impl App {
             clipboard_event_subscription,
             global_event_subscription,
             tray_menu_event_subscription,
-            loose_focus_event_subscription,
+            iced_event_subscription,
             window_close_event_subscription,
         ])
     }
@@ -306,14 +394,6 @@ impl App {
                         rdev::Key::MetaLeft | rdev::Key::MetaRight => {
                             modifiers.insert(Modifiers::LOGO);
                         }
-                        rdev::Key::F9 => {
-                            if modifiers.alt() {
-                                sender
-                                    .send(Message::RequestOpenHistoryWindow)
-                                    .await
-                                    .unwrap();
-                            }
-                        }
                         _ => {}
                     },
                     rdev::EventType::KeyRelease(key) => match key {
@@ -333,6 +413,10 @@ impl App {
                     },
                     _ => {}
                 }
+                sender
+                    .send(Message::GlobalEvent(modifiers, event))
+                    .await
+                    .unwrap()
             }
         })
     }
