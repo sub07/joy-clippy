@@ -1,6 +1,6 @@
 use iced::{
-    widget::{self, button, column, container, scrollable, text},
-    Element, Length, Task,
+    widget::{button, center, column, container, horizontal_space, row, scrollable, text, Column},
+    Alignment, Element, Length, Task,
 };
 
 use crate::{
@@ -92,23 +92,32 @@ impl State {
                 selected_item_cursor,
                 items,
             } => column![
-                button(text!("Paste")).on_press(Message::Paste),
-                button(text!("Settings")).on_press(Message::OpenSettings),
+                row![
+                    text!("Clippy"),
+                    horizontal_space(),
+                    button(text!("Settings")).on_press(Message::OpenSettings)
+                ]
+                .align_y(Alignment::Center)
+                .padding(10),
                 scrollable(
-                    widget::Column::from_iter(items.iter().enumerate().map(|(index, entry)| {
-                        container(text!("{}", entry.data).size(13))
-                            .style(move |theme: &iced::Theme| {
-                                row_bg_color(theme, index, index == *selected_item_cursor as usize)
-                            })
-                            .padding(8)
-                            .width(Length::Fill)
-                            .into()
+                    Column::from_iter(items.iter().enumerate().map(|(index, entry)| {
+                        container(
+                            text!("{}", entry.data)
+                                .size(13)
+                                .wrapping(text::Wrapping::None),
+                        )
+                        .style(move |theme: &iced::Theme| {
+                            row_bg_color(theme, index, index == *selected_item_cursor as usize)
+                        })
+                        .padding(8)
+                        .width(Length::Fill)
+                        .into()
                     },))
                     .spacing(4),
-                )
+                ),
             ]
             .into(),
-            State::Loading => text!("Loading...").into(),
+            State::Loading => center(text!("Loading...")).into(),
         }
     }
 }
